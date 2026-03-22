@@ -139,7 +139,7 @@ with st.sidebar:
     st.session_state.groq_api_key = groq_key if groq_key else None
     
     if st.session_state.yt_api_key:
-        st.session_state.use_live_api = st.checkbox("Enable Live Discovery", value=True)
+        st.session_state.use_live_api = st.checkbox("Enable Live Discovery", value=False, help="Switch between hand-picked classics and live YouTube discovery.")
         st.success("YouTube API Connected!")
     
     st.divider()
@@ -269,12 +269,17 @@ if st.session_state.page == 'HOME':
                 st.session_state.page = 'RECOMMENDATIONS'
                 
                 # Dynamic Fetching Logic
+                films = []
                 if st.session_state.use_live_api:
                     with st.spinner(f"🚀 Discovering live {g} shorts..."):
                         films = fetch_live_films(g)
+                    if not films:
+                        st.info("No live results found. Showing our hand-picked collection instead.")
+                        films = [f for f in st.session_state.all_films if f['genre'] == g]
                 else:
                     films = [f for f in st.session_state.all_films if f['genre'] == g]
-                    random.shuffle(films)
+                
+                random.shuffle(films)
                 
                 st.session_state.filtered_films = films
                 st.session_state.rec_index = 0
@@ -316,8 +321,9 @@ elif st.session_state.page == 'RECOMMENDATIONS':
                 real_idx = start + idx
                 with cols[idx]:
                     st.markdown('<div class="film-card">', unsafe_allow_html=True)
-                    # Dynamic Thumbnail extracting VIDEO_ID
-                    st.image(get_thumb(vid['youtube_url']), use_column_width=True)
+                    # Use get_thumb helper for EVERY rendering to ensure reliability
+                    thumb_url = get_thumb(vid['youtube_url'])
+                    st.image(thumb_url, use_column_width=True)
                     st.markdown(f"#### {vid['title']}")
                     st.markdown(f"**⏱ {vid['duration']} min**")
                     st.write(vid['summary'])
