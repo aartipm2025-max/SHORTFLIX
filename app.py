@@ -22,10 +22,10 @@ def get_yt_id(url):
     return match.group(1) if match else None
 
 def get_thumb(url):
-    """Generates the hqdefault thumbnail URL with a fallback."""
+    """Generates the mqdefault thumbnail URL (more reliable than hqdefault)."""
     video_id = get_yt_id(url)
     if video_id:
-        return f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+        return f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg"
     return "https://via.placeholder.com/400x225?text=No+Thumbnail"
 
 st.set_page_config(page_title="ShortFlix", layout="wide", initial_sidebar_state="collapsed")
@@ -169,13 +169,15 @@ def fetch_live_films(genre):
     
     try:
         youtube = build("youtube", "v3", developerKey=st.session_state.yt_api_key)
-        search_query = f"{genre} short film award winning"
+        # Broadening query and removing restrictive duration for better discovery
+        search_query = f"{genre} short film"
         request = youtube.search().list(
             q=search_query,
             part="snippet",
             maxResults=15,
             type="video",
-            videoDuration="medium"
+            relevanceLanguage="en",
+            safeSearch="moderate"
         )
         response = request.execute()
         
