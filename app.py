@@ -2,7 +2,12 @@ import streamlit as st
 import random
 import re
 import os
+from dotenv import load_dotenv
 from data import get_films
+
+# Load local .env variables
+load_dotenv()
+
 # API Clients (will use if keys are provided)
 try:
     from googleapiclient.discovery import build
@@ -123,8 +128,12 @@ if 'use_live_api' not in st.session_state:
 # Sidebar for API Settings
 with st.sidebar:
     st.title("⚙️ API Settings")
-    yt_key = st.text_input("YouTube API Key", type="password", help="To fetch live shorts directly from YouTube.")
-    groq_key = st.text_input("Groq API Key", type="password", help="For AI-powered catchy summaries.")
+    # Priority: 1. Manual User Input, 2. ENV File, 3. None
+    env_yt = os.getenv("YOUTUBE_API_KEY", "")
+    env_groq = os.getenv("GROQ_API_KEY", "")
+    
+    yt_key = st.text_input("YouTube API Key", value=env_yt, type="password", help="To fetch live shorts directly from YouTube.")
+    groq_key = st.text_input("Groq API Key", value=env_groq, type="password", help="For AI-powered catchy summaries.")
     
     st.session_state.yt_api_key = yt_key if yt_key else None
     st.session_state.groq_api_key = groq_key if groq_key else None

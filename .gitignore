@@ -7,3 +7,5 @@ __pycache__/
 build_*.py
 fix_all.py
 verify_data.py
+.env
+
