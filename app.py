@@ -1,6 +1,20 @@
 import streamlit as st
 import random
+import re
 from data import get_films
+
+def get_yt_id(url):
+    """Extracts the YouTube video ID from a URL."""
+    pattern = r'(?:v=|\/)([0-9A-Za-z_-]{11}).*'
+    match = re.search(pattern, url)
+    return match.group(1) if match else None
+
+def get_thumb(url):
+    """Generates the hqdefault thumbnail URL with a fallback."""
+    video_id = get_yt_id(url)
+    if video_id:
+        return f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+    return "https://via.placeholder.com/400x225?text=No+Thumbnail"
 
 st.set_page_config(page_title="ShortFlix", layout="wide", initial_sidebar_state="collapsed")
 
@@ -88,12 +102,15 @@ if 'genre' not in st.session_state:
     st.session_state.genre = None
 if 'video' not in st.session_state:
     st.session_state.video = None
+if 'filtered_films' not in st.session_state:
+    st.session_state.filtered_films = []
 if 'rec_list' not in st.session_state:
     st.session_state.rec_list = []
-if 'duration_filter' not in st.session_state:
-    st.session_state.duration_filter = "All"
-if 'refresh_rec' not in st.session_state:
-    st.session_state.refresh_rec = True
+if 'rec_index' not in st.session_state:
+    st.session_state.rec_index = 0
+if 'current_playing_index' not in st.session_state:
+    st.session_state.current_playing_index = 0
+
 st.session_state.all_films = get_films()
 
 # Navigation handlers
@@ -101,10 +118,11 @@ def go_home():
     st.session_state.page = 'HOME'
     st.session_state.genre = None
     st.session_state.video = None
-    st.session_state.refresh_rec = True
+    st.session_state.rec_index = 0
 
-def go_video(vid):
+def go_video(vid, index_in_filtered):
     st.session_state.video = vid
+    st.session_state.current_playing_index = index_in_filtered
     st.session_state.page = 'VIDEO'
     
 def go_recs():
@@ -158,7 +176,11 @@ if st.session_state.page == 'HOME':
             if st.button(g.upper(), use_container_width=True, key=f"btn_{g}"):
                 st.session_state.genre = g
                 st.session_state.page = 'RECOMMENDATIONS'
-                st.session_state.refresh_rec = True
+                # Initialize and shuffle filtered films for this genre
+                films = [f for f in st.session_state.all_films if f['genre'] == g]
+                random.shuffle(films)
+                st.session_state.filtered_films = films
+                st.session_state.rec_index = 0
                 st.rerun()
 
 # RECOMMENDATIONS PAGE
@@ -167,36 +189,46 @@ elif st.session_state.page == 'RECOMMENDATIONS':
     st.markdown(f"<h1 style='text-align: center; margin-bottom: 5px;'>🍿 {st.session_state.genre} Shorts</h1>", unsafe_allow_html=True)
     
     # Filter Logic
-    filtered = [f for f in st.session_state.all_films if f['genre'] == st.session_state.genre]
+    filtered = st.session_state.filtered_films
 
     if not filtered:
         st.warning("No films found for this genre.")
     else:
-        if st.session_state.refresh_rec:
-            verified = [x for x in filtered if x.get('is_verified', False)]
-            unverified = [x for x in filtered if not x.get('is_verified', False)]
-            random.shuffle(verified)
-            random.shuffle(unverified)
-            combined = verified + unverified
+        # Select next 5 unique films
+        start = st.session_state.rec_index
+        end = start + 5
+        
+        # If we reached the end, loop back or re-shuffle
+        if start >= len(filtered):
+            random.shuffle(st.session_state.filtered_films)
+            st.session_state.rec_index = 0
+            start = 0
+            end = 5
+            filtered = st.session_state.filtered_films
+
+        current_recs = filtered[start:end]
+        st.session_state.rec_list = current_recs
             
-            sample_size = min(3, len(combined))
-            st.session_state.rec_list = combined[:sample_size]
-            st.session_state.refresh_rec = False
-            
-        cols = st.columns(3)
-        for idx, vid in enumerate(st.session_state.rec_list):
-            with cols[idx]:
-                st.markdown('<div class="film-card">', unsafe_allow_html=True)
-                st.image(vid['thumbnail'], use_column_width=True)
-                st.markdown(f"#### {vid['title']}")
-                st.markdown(f"**⏱ {vid['duration']} min**")
-                st.write(vid['summary'])
-                st.button(f"▶ Play", key=f"play_{vid['id']}", on_click=go_video, args=(vid,), type="primary", use_container_width=True)
-                st.markdown('</div>', unsafe_allow_html=True)
+        # Display in columns (max 5)
+        num_cols = len(current_recs)
+        if num_cols > 0:
+            cols = st.columns(num_cols)
+            for idx, vid in enumerate(current_recs):
+                # Calculate real index in filtered list
+                real_idx = start + idx
+                with cols[idx]:
+                    st.markdown('<div class="film-card">', unsafe_allow_html=True)
+                    # Dynamic Thumbnail extracting VIDEO_ID
+                    st.image(get_thumb(vid['youtube_url']), use_column_width=True)
+                    st.markdown(f"#### {vid['title']}")
+                    st.markdown(f"**⏱ {vid['duration']} min**")
+                    st.write(vid['summary'])
+                    st.button(f"▶ Play", key=f"play_{vid['id']}", on_click=go_video, args=(vid, real_idx), type="primary", use_container_width=True)
+                    st.markdown('</div>', unsafe_allow_html=True)
 
         st.write("")
-        if st.button("🔄 Show next 3", use_container_width=True):
-            st.session_state.refresh_rec = True
+        if st.button("🔄 Show another 5", use_container_width=True):
+            st.session_state.rec_index += 5
             st.rerun()
 
 # VIDEO PAGE
@@ -214,10 +246,14 @@ elif st.session_state.page == 'VIDEO':
     st.markdown("---")
     
     # Next video logic
-    filtered = [f for f in st.session_state.all_films if f['genre'] == st.session_state.genre and f['id'] != vid['id']]
-
-    if filtered:
-        next_vid = random.choice(filtered)
-        st.button("⏭ Next Film", type="primary", use_container_width=True, on_click=go_video, args=(next_vid,))
+    filtered = st.session_state.filtered_films
+    total_films = len(filtered)
+    
+    if total_films > 1:
+        # Move to next film in the shuffled list
+        next_idx = (st.session_state.current_playing_index + 1) % total_films
+        next_vid = filtered[next_idx]
+        
+        st.button("⏭ Next Film", type="primary", use_container_width=True, on_click=go_video, args=(next_vid, next_idx))
     else:
-        st.info("No more films available in this genre.")
+        st.info("No other films available in this genre.")
