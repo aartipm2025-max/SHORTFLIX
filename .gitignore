@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.streamlit/
+.DS_Store
+*.md
+!README.md
+build_*.py
+fix_all.py
+verify_data.py
