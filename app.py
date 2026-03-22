@@ -194,10 +194,11 @@ def fetch_live_films(genre):
                 "title": snippet["title"],
                 "youtube_url": f"https://www.youtube.com/watch?v={vid_id}",
                 "genre": genre,
-                "duration": "??", # Search API doesn't give duration instantly without another call
+                "duration": "??", 
                 "summary": summary,
-                "thumbnail": f"https://img.youtube.com/vi/{vid_id}/hqdefault.jpg",
-                "is_verified": True
+                "thumbnail": get_thumb(f"https://www.youtube.com/watch?v={vid_id}"),
+                "is_verified": True,
+                "is_live": True
             })
         return live_films
     except Exception as e:
@@ -324,6 +325,10 @@ elif st.session_state.page == 'RECOMMENDATIONS':
                     # Use get_thumb helper for EVERY rendering to ensure reliability
                     thumb_url = get_thumb(vid['youtube_url'])
                     st.image(thumb_url, use_column_width=True)
+                    
+                    if vid.get('is_live'):
+                        st.markdown("<span style='color: #FF4B4B; font-size: 10px; font-weight: bold;'>🔴 LIVE DISCOVERY</span>", unsafe_allow_html=True)
+                        
                     st.markdown(f"#### {vid['title']}")
                     st.markdown(f"**⏱ {vid['duration']} min**")
                     st.write(vid['summary'])
