@@ -1,7 +1,14 @@
 import streamlit as st
 import random
 import re
+import os
 from data import get_films
+# API Clients (will use if keys are provided)
+try:
+    from googleapiclient.discovery import build
+    from groq import Groq
+except ImportError:
+    pass
 
 def get_yt_id(url):
     """Extracts the YouTube video ID from a URL."""
@@ -110,8 +117,81 @@ if 'rec_index' not in st.session_state:
     st.session_state.rec_index = 0
 if 'current_playing_index' not in st.session_state:
     st.session_state.current_playing_index = 0
+if 'use_live_api' not in st.session_state:
+    st.session_state.use_live_api = False
+
+# Sidebar for API Settings
+with st.sidebar:
+    st.title("⚙️ API Settings")
+    yt_key = st.text_input("YouTube API Key", type="password", help="To fetch live shorts directly from YouTube.")
+    groq_key = st.text_input("Groq API Key", type="password", help="For AI-powered catchy summaries.")
+    
+    st.session_state.yt_api_key = yt_key if yt_key else None
+    st.session_state.groq_api_key = groq_key if groq_key else None
+    
+    if st.session_state.yt_api_key:
+        st.session_state.use_live_api = st.checkbox("Enable Live Discovery", value=True)
+        st.success("YouTube API Connected!")
+    
+    st.divider()
+    st.markdown("Developed by **ShortFlix Labs**")
 
 st.session_state.all_films = get_films()
+
+# API Helpers
+def get_ai_summary(title, description):
+    if not st.session_state.groq_api_key:
+        return description[:100] + "..." if description else "A intriguing cinematic short film."
+    
+    try:
+        client = Groq(api_key=st.session_state.groq_api_key)
+        prompt = f"Write a 1-sentence, highly engaging hook summary for a film titled '{title}' with description: '{description}'. Key rules: Catchy, curious, max 15 words."
+        completion = client.chat.completions.create(
+            model="llama3-8b-8192",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return completion.choices[0].message.content
+    except:
+        return description[:80] + "..."
+
+def fetch_live_films(genre):
+    if not st.session_state.yt_api_key:
+        return []
+    
+    try:
+        youtube = build("youtube", "v3", developerKey=st.session_state.yt_api_key)
+        search_query = f"{genre} short film award winning"
+        request = youtube.search().list(
+            q=search_query,
+            part="snippet",
+            maxResults=15,
+            type="video",
+            videoDuration="medium"
+        )
+        response = request.execute()
+        
+        live_films = []
+        for item in response.get("items", []):
+            vid_id = item["id"]["videoId"]
+            snippet = item["snippet"]
+            
+            # Use Groq if available for summary
+            summary = get_ai_summary(snippet["title"], snippet["description"])
+            
+            live_films.append({
+                "id": vid_id,
+                "title": snippet["title"],
+                "youtube_url": f"https://www.youtube.com/watch?v={vid_id}",
+                "genre": genre,
+                "duration": "??", # Search API doesn't give duration instantly without another call
+                "summary": summary,
+                "thumbnail": f"https://img.youtube.com/vi/{vid_id}/hqdefault.jpg",
+                "is_verified": True
+            })
+        return live_films
+    except Exception as e:
+        st.error(f"API Error: {e}")
+        return []
 
 # Navigation handlers
 def go_home():
@@ -176,9 +256,15 @@ if st.session_state.page == 'HOME':
             if st.button(g.upper(), use_container_width=True, key=f"btn_{g}"):
                 st.session_state.genre = g
                 st.session_state.page = 'RECOMMENDATIONS'
-                # Initialize and shuffle filtered films for this genre
-                films = [f for f in st.session_state.all_films if f['genre'] == g]
-                random.shuffle(films)
+                
+                # Dynamic Fetching Logic
+                if st.session_state.use_live_api:
+                    with st.spinner(f"🚀 Discovering live {g} shorts..."):
+                        films = fetch_live_films(g)
+                else:
+                    films = [f for f in st.session_state.all_films if f['genre'] == g]
+                    random.shuffle(films)
+                
                 st.session_state.filtered_films = films
                 st.session_state.rec_index = 0
                 st.rerun()
@@ -192,27 +278,28 @@ elif st.session_state.page == 'RECOMMENDATIONS':
     filtered = st.session_state.filtered_films
 
     if not filtered:
-        st.warning("No films found for this genre.")
+        st.warning("No films found for this genre. If using Live API, try again in a moment.")
     else:
-        # Select next 5 unique films
+        # Select next 3 unique films
         start = st.session_state.rec_index
-        end = start + 5
+        end = start + 3
         
         # If we reached the end, loop back or re-shuffle
         if start >= len(filtered):
-            random.shuffle(st.session_state.filtered_films)
+            if not st.session_state.use_live_api:
+                random.shuffle(st.session_state.filtered_films)
             st.session_state.rec_index = 0
             start = 0
-            end = 5
+            end = 3
             filtered = st.session_state.filtered_films
 
         current_recs = filtered[start:end]
         st.session_state.rec_list = current_recs
             
-        # Display in columns (max 5)
+        # Display in columns (3)
         num_cols = len(current_recs)
         if num_cols > 0:
-            cols = st.columns(num_cols)
+            cols = st.columns(3) # Explicitly use 3 columns
             for idx, vid in enumerate(current_recs):
                 # Calculate real index in filtered list
                 real_idx = start + idx
@@ -227,8 +314,8 @@ elif st.session_state.page == 'RECOMMENDATIONS':
                     st.markdown('</div>', unsafe_allow_html=True)
 
         st.write("")
-        if st.button("🔄 Show another 5", use_container_width=True):
-            st.session_state.rec_index += 5
+        if st.button("🔄 Show another 3", use_container_width=True):
+            st.session_state.rec_index += 3
             st.rerun()
 
 # VIDEO PAGE
