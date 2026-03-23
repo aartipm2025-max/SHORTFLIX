@@ -292,7 +292,7 @@ def fetch_live_films(genre):
         
     except Exception as e:
         print(f"DEBUG: API Error: {e}")
-        return curated_films
+        return []
 
 # Navigation handlers
 def go_home():
