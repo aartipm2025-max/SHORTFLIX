@@ -1,4 +1,4 @@
-streamlit==1.31.0
+streamlit
 google-api-python-client
 groq
 python-dotenv

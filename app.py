@@ -2,6 +2,7 @@ import streamlit as st
 import random
 import re
 import os
+from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 from data import get_films
 
@@ -14,6 +15,19 @@ try:
     from groq import Groq
 except ImportError:
     pass
+
+def parse_duration(duration_str):
+    """Parses ISO 8601 duration (PT#M#S) into total integer minutes."""
+    if not duration_str:
+        return 0
+    # ISO 8601 parsing via regex
+    match = re.search(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', duration_str)
+    if not match:
+        return 0
+    hours = int(match.group(1)) if match.group(1) else 0
+    minutes = int(match.group(2)) if match.group(2) else 0
+    seconds = int(match.group(3)) if match.group(3) else 0
+    return (hours * 60) + minutes + (1 if seconds > 30 else 0)
 
 def get_yt_id(url):
     """Extracts the YouTube video ID from a URL."""
@@ -90,19 +104,49 @@ st.markdown("""
         padding: 15px;
         margin-bottom: 20px;
         border: 1px solid #333333;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.05); /* Light soft shadow */
-        transition: transform 0.2s, box-shadow 0.2s;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.5);
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         height: 100%;
         color: var(--primary-text);
+        position: relative;
+        overflow: hidden;
     }
     
     .film-card:hover {
-        transform: scale(1.02); /* Slight scale */
-        box-shadow: 0 10px 15px rgba(0,0,0,0.1); /* shadow increase */
+        transform: translateY(-8px) scale(1.02);
+        border-color: var(--primary-color);
+        box-shadow: 0 12px 24px rgba(108, 92, 231, 0.2);
     }
     
     .film-card p, .film-card .stMarkdown p {
         color: var(--secondary-text) !important;
+        font-size: 0.9rem;
+        line-height: 1.4;
+    }
+
+    /* Duration Tag */
+    .duration-tag {
+        background-color: rgba(108, 92, 231, 0.2);
+        color: var(--primary-color);
+        padding: 4px 10px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 600;
+        display: inline-block;
+        margin-bottom: 8px;
+    }
+    
+    /* Discovery Indicator */
+    .discovery-indicator {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        background: rgba(0,0,0,0.7);
+        padding: 2px 8px;
+        border-radius: 4px;
+        border: 1px solid #FF4B4B;
+        z-index: 10;
+        backdrop-filter: blur(4px);
     }
 </style>
 """, unsafe_allow_html=True)
@@ -122,88 +166,152 @@ if 'rec_index' not in st.session_state:
     st.session_state.rec_index = 0
 if 'current_playing_index' not in st.session_state:
     st.session_state.current_playing_index = 0
-if 'use_live_api' not in st.session_state:
-    st.session_state.use_live_api = False
+if 'duration_filter' not in st.session_state:
+    st.session_state.duration_filter = "All"
 
-# Sidebar for API Settings
+# Automatic API Configuration (no user input needed)
+st.session_state.yt_api_key = os.getenv("YOUTUBE_API_KEY")
+st.session_state.groq_api_key = os.getenv("GROQ_API_KEY")
+
+# Sidebar (Minimalized)
 with st.sidebar:
-    st.title("⚙️ API Settings")
-    # Priority: 1. Manual User Input, 2. ENV File, 3. None
-    env_yt = os.getenv("YOUTUBE_API_KEY", "")
-    env_groq = os.getenv("GROQ_API_KEY", "")
-    
-    yt_key = st.text_input("YouTube API Key", value=env_yt, type="password", help="To fetch live shorts directly from YouTube.")
-    groq_key = st.text_input("Groq API Key", value=env_groq, type="password", help="For AI-powered catchy summaries.")
-    
-    st.session_state.yt_api_key = yt_key if yt_key else None
-    st.session_state.groq_api_key = groq_key if groq_key else None
-    
+    st.title("🎬 ShortFlix")
     if st.session_state.yt_api_key:
-        st.session_state.use_live_api = st.checkbox("Enable Live Discovery", value=False, help="Switch between hand-picked classics and live YouTube discovery.")
-        st.success("YouTube API Connected!")
+        st.success("YouTube Discovery Active")
+    else:
+        st.error("YouTube API Key Missing in .env")
+        
+    if st.session_state.groq_api_key:
+        st.success("Groq AI Connected")
+    else:
+        st.warning("Groq API Key Missing in .env")
     
     st.divider()
     st.markdown("Developed by **ShortFlix Labs**")
 
-st.session_state.all_films = get_films()
 
 # API Helpers
-def get_ai_summary(title, description):
-    if not st.session_state.groq_api_key:
-        return description[:100] + "..." if description else "A intriguing cinematic short film."
+@st.cache_data(ttl=3600) # Cache summaries for 1 hour
+def process_video_metadata(title, description, api_key):
+    """Translates title to English and generates a 2-line catchy summary."""
+    if not api_key:
+        return title, description[:100] + "..." if description else "An amazing cinematic short film."
     
     try:
-        client = Groq(api_key=st.session_state.groq_api_key)
-        prompt = f"Write a 1-sentence, highly engaging hook summary for a film titled '{title}' with description: '{description}'. Key rules: Catchy, curious, max 15 words."
-        completion = client.chat.completions.create(
-            model="llama3-8b-8192",
-            messages=[{"role": "user", "content": prompt}]
+        client = Groq(api_key=api_key)
+        prompt = (
+            f"Video Title: '{title}'\n"
+            f"Description: '{description[:800]}'\n\n"
+            "INSTRUCTIONS:\n"
+            "1. Translate the title above to English if it is in another language. Keep the original vibe.\n"
+            "2. Write a 2-line summary (under 40 words total) about why this film is absolutely amazing and must-watch.\n\n"
+            "Return the result EXACTLY in this format:\n"
+            "ENG_TITLE: [The English Title]\n"
+            "ENG_SUMMARY: [The 2-line summary]"
         )
-        return completion.choices[0].message.content
-    except:
-        return description[:80] + "..."
+        
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "system", "content": "You are a cinematic curator. Always follow the requested format perfectly."},
+                      {"role": "user", "content": prompt}],
+            temperature=0.5
+        )
+        response_text = completion.choices[0].message.content
+        print(f"DEBUG: Groq Response for '{title}':\n{response_text}")
+        
+        en_title = title
+        summary = description[:100] + "..."
+        
+        # Robust parsing for TITLE
+        if "ENG_TITLE:" in response_text:
+            en_title = response_text.split("ENG_TITLE:")[1].split("\n")[0].strip()
+        
+        # Robust parsing for SUMMARY
+        if "ENG_SUMMARY:" in response_text:
+            summary = response_text.split("ENG_SUMMARY:")[1].strip()
+            
+        return en_title, summary
+    except Exception as e:
+        print(f"DEBUG: Groq Error: {e}")
+        return title, description[:100] + "..." if description else "An amazing cinematic short film."
+
 
 def fetch_live_films(genre):
+    """Fetches high quality live shorts with parallelized metadata processing and multi-level caching."""
+    curated_films = [f for f in get_films() if f['genre'] == genre]
+    
     if not st.session_state.yt_api_key:
-        return []
+        return curated_films
     
     try:
         youtube = build("youtube", "v3", developerKey=st.session_state.yt_api_key)
-        # Broadening query and removing restrictive duration for better discovery
-        search_query = f"{genre} short film"
+        # Search query refined for English content specifically
+        search_query = f'"{genre}" short film English'
         request = youtube.search().list(
             q=search_query,
             part="snippet",
-            maxResults=15,
+            maxResults=12, # Optimized for speed
             type="video",
             relevanceLanguage="en",
+            regionCode="US", 
             safeSearch="moderate"
         )
         response = request.execute()
         
-        live_films = []
-        for item in response.get("items", []):
-            vid_id = item["id"]["videoId"]
+        video_ids = [item["id"]["videoId"] for item in response.get("items", [])]
+        if not video_ids:
+            return curated_films
+            
+        # Batch fetch video details
+        vid_req = youtube.videos().list(
+            id=",".join(video_ids),
+            part="snippet,contentDetails"
+        )
+        vid_resp = vid_req.execute()
+        
+        # Parallel Metadata Processing
+        def process_item(item):
+            vid_id = item["id"]
             snippet = item["snippet"]
+            content_details = item["contentDetails"]
             
-            # Use Groq if available for summary
-            summary = get_ai_summary(snippet["title"], snippet["description"])
+            # Language Check
+            lang = snippet.get("defaultAudioLanguage", snippet.get("defaultLanguage", "unknown")).lower()
+            if lang != "unknown" and not lang.startswith("en"):
+                return None
             
-            live_films.append({
+            # Use cached metadata processor
+            en_title, summary = process_video_metadata(snippet["title"], snippet["description"], st.session_state.groq_api_key)
+            
+            # Duration parse
+            raw_dur = content_details.get("duration", "PT0M0S")
+            duration_min = parse_duration(raw_dur)
+            
+            return {
                 "id": vid_id,
-                "title": snippet["title"],
+                "title": en_title,
                 "youtube_url": f"https://www.youtube.com/watch?v={vid_id}",
                 "genre": genre,
-                "duration": "??", 
+                "duration": duration_min, 
                 "summary": summary,
                 "thumbnail": get_thumb(f"https://www.youtube.com/watch?v={vid_id}"),
                 "is_verified": True,
                 "is_live": True
-            })
-        return live_films
+            }
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            p_results = list(executor.map(process_item, vid_resp.get("items", [])))
+        
+        live_films = [r for r in p_results if r is not None]
+        
+        # Merge, Shuffle, and Limit
+        combined = (curated_films + live_films)
+        random.shuffle(combined)
+        return combined[:25]
+        
     except Exception as e:
-        st.error(f"API Error: {e}")
-        return []
+        print(f"DEBUG: API Error: {e}")
+        return curated_films
 
 # Navigation handlers
 def go_home():
@@ -269,30 +377,45 @@ if st.session_state.page == 'HOME':
                 st.session_state.genre = g
                 st.session_state.page = 'RECOMMENDATIONS'
                 
-                # Dynamic Fetching Logic
-                films = []
-                if st.session_state.use_live_api:
-                    with st.spinner(f"🚀 Discovering live {g} shorts..."):
-                        films = fetch_live_films(g)
-                    if not films:
-                        st.info("No live results found. Showing our hand-picked collection instead.")
-                        films = [f for f in st.session_state.all_films if f['genre'] == g]
+                # Exclusively use YouTube Discovery
+                with st.spinner(f"🚀 Discovering live {g} shorts..."):
+                    st.session_state.filtered_films = fetch_live_films(g)
+                
+                if not st.session_state.filtered_films:
+                    st.error("Could not find any live shorts for this genre. Please check your YouTube API configuration.")
                 else:
-                    films = [f for f in st.session_state.all_films if f['genre'] == g]
-                
-                random.shuffle(films)
-                
-                st.session_state.filtered_films = films
-                st.session_state.rec_index = 0
-                st.rerun()
+                    st.session_state.rec_index = 0
+                    st.rerun()
+
 
 # RECOMMENDATIONS PAGE
 elif st.session_state.page == 'RECOMMENDATIONS':
-    st.button("← Back to Genres", on_click=go_home)
-    st.markdown(f"<h1 style='text-align: center; margin-bottom: 5px;'>🍿 {st.session_state.genre} Shorts</h1>", unsafe_allow_html=True)
+    # Filter UI
+    col_f1, col_f2 = st.columns([1, 4])
+    with col_f1:
+        st.button("← Back", on_click=go_home, use_container_width=True)
+    with col_f2:
+        # Styled Pills / Tabs for Filter
+        options = ["All", "Short (<5m)", "Medium (5-15m)", "Long (15m+)"]
+        selection = st.radio("Duration", options, horizontal=True, label_visibility="collapsed")
+        if selection != st.session_state.duration_filter:
+            st.session_state.duration_filter = selection
+            st.session_state.rec_index = 0
+            st.rerun()
+
+    st.markdown(f"<h1 style='text-align: center; margin-top: -20px; margin-bottom: 20px;'>🍿 {st.session_state.genre} Shorts</h1>", unsafe_allow_html=True)
     
-    # Filter Logic
-    filtered = st.session_state.filtered_films
+    # Filtering logic
+    all_discovered = st.session_state.filtered_films
+    
+    if st.session_state.duration_filter == "Short (<5m)":
+        filtered = [f for f in all_discovered if f['duration'] < 5]
+    elif st.session_state.duration_filter == "Medium (5-15m)":
+        filtered = [f for f in all_discovered if 5 <= f['duration'] <= 15]
+    elif st.session_state.duration_filter == "Long (15m+)":
+        filtered = [f for f in all_discovered if f['duration'] > 15]
+    else:
+        filtered = all_discovered
 
     if not filtered:
         st.warning("No films found for this genre. If using Live API, try again in a moment.")
@@ -322,15 +445,16 @@ elif st.session_state.page == 'RECOMMENDATIONS':
                 real_idx = start + idx
                 with cols[idx]:
                     st.markdown('<div class="film-card">', unsafe_allow_html=True)
+                    if vid.get('is_live'):
+                        st.markdown("<div class='discovery-indicator'><span style='color: #FF4B4B; font-size: 10px; font-weight: bold;'>🔴 LIVE</span></div>", unsafe_allow_html=True)
+                    
                     # Use get_thumb helper for EVERY rendering to ensure reliability
                     thumb_url = get_thumb(vid['youtube_url'])
                     st.image(thumb_url, use_column_width=True)
                     
-                    if vid.get('is_live'):
-                        st.markdown("<span style='color: #FF4B4B; font-size: 10px; font-weight: bold;'>🔴 LIVE DISCOVERY</span>", unsafe_allow_html=True)
-                        
+                    st.markdown(f"<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
                     st.markdown(f"#### {vid['title']}")
-                    st.markdown(f"**⏱ {vid['duration']} min**")
+                    st.markdown(f"<div class='duration-tag'>⏱ {vid['duration']} mins</div>", unsafe_allow_html=True)
                     st.write(vid['summary'])
                     st.button(f"▶ Play", key=f"play_{vid['id']}", on_click=go_video, args=(vid, real_idx), type="primary", use_container_width=True)
                     st.markdown('</div>', unsafe_allow_html=True)
@@ -349,8 +473,8 @@ elif st.session_state.page == 'VIDEO':
     st.video(vid['youtube_url'])
     
     st.title(vid['title'])
-    st.markdown(f"**⏱ {vid['duration']} min | {vid['genre']}**")
-    st.write(vid['summary'])
+    st.markdown(f"<div class='duration-tag'>⏱ {vid['duration']} mins | {vid['genre']}</div>", unsafe_allow_html=True)
+    st.write(f"<div style='margin-top: 10px; color: #9CA3AF;'>{vid['summary']}</div>", unsafe_allow_html=True)
     
     st.markdown("---")
     
