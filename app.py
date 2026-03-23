@@ -36,10 +36,10 @@ def get_yt_id(url):
     return match.group(1) if match else None
 
 def get_thumb(url):
-    """Generates the mqdefault thumbnail URL (more reliable than hqdefault)."""
+    """Extracts high quality YouTube thumbnail with hqdefault fallback."""
     video_id = get_yt_id(url)
     if video_id:
-        return f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg"
+        return f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
     return "https://via.placeholder.com/400x225?text=No+Thumbnail"
 
 st.set_page_config(page_title="ShortFlix", layout="wide", initial_sidebar_state="collapsed")
@@ -173,21 +173,9 @@ if 'duration_filter' not in st.session_state:
 st.session_state.yt_api_key = os.getenv("YOUTUBE_API_KEY")
 st.session_state.groq_api_key = os.getenv("GROQ_API_KEY")
 
-# Sidebar (Minimalized)
-with st.sidebar:
-    st.title("🎬 ShortFlix")
-    if st.session_state.yt_api_key:
-        st.success("YouTube Discovery Active")
-    else:
-        st.error("YouTube API Key Missing in .env")
-        
-    if st.session_state.groq_api_key:
-        st.success("Groq AI Connected")
-    else:
-        st.warning("Groq API Key Missing in .env")
-    
-    st.divider()
-    st.markdown("Developed by **ShortFlix Labs**")
+# Sidebar - Disabled for cinematic fullscreen experience
+# with st.sidebar:
+#     st.title("🎬 ShortFlix")
 
 
 # API Helpers
@@ -238,10 +226,9 @@ def process_video_metadata(title, description, api_key):
 
 def fetch_live_films(genre):
     """Fetches high quality live shorts with parallelized metadata processing and multi-level caching."""
-    curated_films = [f for f in get_films() if f['genre'] == genre]
-    
+    # Pure YouTube discovery - bypasses local curated dataset entirely as requested
     if not st.session_state.yt_api_key:
-        return curated_films
+        return []
     
     try:
         youtube = build("youtube", "v3", developerKey=st.session_state.yt_api_key)
@@ -250,7 +237,7 @@ def fetch_live_films(genre):
         request = youtube.search().list(
             q=search_query,
             part="snippet",
-            maxResults=12, # Optimized for speed
+            maxResults=15, # Increased for better selection pool
             type="video",
             relevanceLanguage="en",
             regionCode="US", 
@@ -260,7 +247,7 @@ def fetch_live_films(genre):
         
         video_ids = [item["id"]["videoId"] for item in response.get("items", [])]
         if not video_ids:
-            return curated_films
+            return []
             
         # Batch fetch video details
         vid_req = youtube.videos().list(
@@ -274,11 +261,6 @@ def fetch_live_films(genre):
             vid_id = item["id"]
             snippet = item["snippet"]
             content_details = item["contentDetails"]
-            
-            # Language Check
-            lang = snippet.get("defaultAudioLanguage", snippet.get("defaultLanguage", "unknown")).lower()
-            if lang != "unknown" and not lang.startswith("en"):
-                return None
             
             # Use cached metadata processor
             en_title, summary = process_video_metadata(snippet["title"], snippet["description"], st.session_state.groq_api_key)
@@ -304,10 +286,9 @@ def fetch_live_films(genre):
         
         live_films = [r for r in p_results if r is not None]
         
-        # Merge, Shuffle, and Limit
-        combined = (curated_films + live_films)
-        random.shuffle(combined)
-        return combined[:25]
+        # Return pure YouTube results
+        random.shuffle(live_films)
+        return live_films[:25]
         
     except Exception as e:
         print(f"DEBUG: API Error: {e}")
@@ -426,8 +407,7 @@ elif st.session_state.page == 'RECOMMENDATIONS':
         
         # If we reached the end, loop back or re-shuffle
         if start >= len(filtered):
-            if not st.session_state.use_live_api:
-                random.shuffle(st.session_state.filtered_films)
+            random.shuffle(st.session_state.filtered_films)
             st.session_state.rec_index = 0
             start = 0
             end = 3
